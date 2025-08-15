@@ -3,34 +3,23 @@ import torch.nn as nn
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
-def sphere_boundary(x):
-    return (torch.sum(x[:, :2] ** 2, 1) - 1) ** 2 + torch.sum(
-        x[:, 2:], 1
-    )  # **2 + torch.sum(x[:,2:]**2,1)
 
-
+def equator_boundary(x):
+    return torch.sum(x[:, 2:], 1)
 def sphere_constraint(x):
     return torch.sum(x**2, 1).unsqueeze(1) - 1  # (n,) to (n,1)
-
-
 def cylinder_constraint(x):
     return torch.sum(x[:, :2] ** 2, 1).unsqueeze(1) - 1
-
-
 def ellipsoid_constraint(x):
     x1 = x[:, 0]
     x2 = x[:, 1]
     x3 = x[:, 2]
     return torch.unsqueeze((x1**2) / 1.0 + (x2**2) / 4.0 + (x3**2) / 9.0 - 1, 1)
-
-
 def hyperbolic_constraint(x):
     x1 = x[:, 0]
     x2 = x[:, 1]
     x3 = x[:, 2]
     return torch.unsqueeze(x3 - x1**2 + x2**2, 1)
-
-
 def torus_constraint(x, R=2.0, r=1.0):
     x1 = x[:, 0]
     x2 = x[:, 1]
@@ -39,7 +28,6 @@ def torus_constraint(x, R=2.0, r=1.0):
 
 def velocity_constraint(x):
     return torch.sum(x**2, 1, keepdim=True) - 1
-
 
 def energy_function(v):
     return torch.sum(v**2, 1, keepdim=True)
