@@ -16,7 +16,7 @@ B = np.array([[0.0],[1.0]]).T
 A_torch=torch.Tensor(A).to(device)
 B_torch=torch.Tensor(B).to(device)
 sqrt5 = np.sqrt(1)
-is_zero = 0.05
+is_zero = 0.22
 
 class basicNN(nn.Module):
 	"""Fully-connected neural network."""
@@ -213,7 +213,7 @@ def integrate_state(t,x,net_x,net_p,net_u):
 	u=net_u(xp).detach().numpy()
 	norm_x = np.linalg.norm(x)
 	norm_u = np.linalg.norm(u)
-	if norm_x<is_zero:
+	if norm_x<0.21:
 		return steady_state(x,u)
 	return newton_dynamic(x,u)
 
@@ -235,7 +235,6 @@ def newton_pde(t,net_x,net_p,net_u,loss):
 		dp_dt[:,j] = torch.autograd.grad(p, t, grad_outputs=tangent,create_graph=True)[0][:,0]
 	p_clone = p.clone().detach()
 	x_clone = x.clone().detach()
-	# u_clone = u.clone().detach()
 	f_xu = newton_dynamic_torch(x,u)
 
 	H = torch.sum(p*f_xu,1)+1
@@ -248,12 +247,18 @@ def newton_pde(t,net_x,net_p,net_u,loss):
 
 def pde_u(x_p,net):
 	u = net(x_p)
-	x = x_p[:,:3]
-	p = x_p[:,3:6]
+	x = x_p[:,:2]
+	p = x_p[:,2:4]
 	H_clone = torch.sum(p*newton_dynamic_torch(x,u),1)
 	pde3 = torch.mean(H_clone,0)
 	return pde3
 
+def curriculum_pde():
+	curriculum=[]
+	for i in range(10):
+		lr_coeff = i/10
+		curriculum.append(lambda t,out:newton_pde(t,out,lr_coeff,lr_coeff,1-lr_coeff))
+	return curriculum
 
 def gen_truedata():
 	t = np.linspace(0, T, 500)
@@ -334,11 +339,12 @@ if __name__ == '__main__':
 		mse_terminal_p = mse_cost_function(net_terminal_p, pt_p_terminal)
 		mse_terminal_p.backward()
 		optimizer_p_pretrain.step()
+	print("done pretraining")
 	del optimizer_p_pretrain
 	# Training train state + u alternatively
 	optimizer_p = torch.optim.SGD(net_p.parameters(),lr=0.001)
-	cst = 1
-	alpha = 1.5
+	f1,f2 = 0.2,0.2
+	a1,a2,a3 = 0.2,0.2,0.2
 	for epoch in range(iterations):
 		#Training the second part
 		for epoch_u in range(10):
@@ -365,20 +371,21 @@ if __name__ == '__main__':
 			mse_end = mse_cost_function(net_end_x, pt_x_end)
 
 			pde_p = pde_p_bc(min_time,net_x,net_p,net_u,mse_cost_function)
-			mse_bc = mse_init+mse_end+pde_p
+			mse_bc = a1*mse_init+a2*mse_end+a3*pde_p
 			
 			# Loss based on PDE
 			t_collocation = np.random.uniform(low=0.0, high=T, size=(3000,1))
 			pt_t_collocation = Variable(torch.from_numpy(t_collocation).float(), requires_grad=True).to(device) 
-			pde1,pde2,pde3 = newton_pde(pt_t_collocation, net_x,net_p,net_u,mse_cost_function,cst) 
-			mse_f = pde1+pde2+pde3
+			pde1,pde2,pde3 = newton_pde(pt_t_collocation, net_x,net_p,net_u,mse_cost_function) 
+			mse_f = f1*pde1+f2*pde2
 
 			# Combining the loss functions
-			loss = alpha*mse_bc+mse_f 
+			loss = mse_bc+mse_f 
 			loss.backward()
 			optimizer_x.step()
 			optimizer_p.step()
 			optimizer_t.step()
+
 		with torch.autograd.no_grad():
 			print("Epoch:{} Pde1:{} Pde2:{} BC:{}".format(epoch,pde1,pde2,mse_bc))
 		writer.add_scalar("Loss PDE 1", pde1, epoch)
@@ -386,8 +393,27 @@ if __name__ == '__main__':
 		writer.add_scalar("Loss PDE 3", pde3, epoch)
 		writer.add_scalar("Loss BC", mse_bc, epoch)
 		writer.add_scalar("Min time", min_time, epoch)
-		if epoch%10000==0:
-			alpha*=1.05
-			torch.save(net_x.state_dict(), 'model_x_bc_'+str(epoch)+'.pth')
-			torch.save(net_p.state_dict(), 'model_p_bc_'+str(epoch)+'.pth')
-			torch.save(net_u.state_dict(), 'model_u_bc_'+str(epoch)+'.pth')
+		if epoch % 1000 == 0 and epoch > 0:
+			loss_vals = [
+					mse_init.item(),
+					mse_end.item(),
+					pde_p.item(),
+					pde1.item(),
+					pde2.item()
+				]
+			idx_max, idx_min = np.argmax(loss_vals), np.argmin(loss_vals)
+			if loss_vals[idx_max] > 10 * loss_vals[idx_min]:
+				coeffs = [a1,a2,a3,f1, f2]
+				transfer = 0.5 * coeffs[idx_min]
+				coeffs[idx_min] *= 0.5
+				coeffs[idx_max] += transfer
+				a1,a2,a3,f1, f2 = coeffs
+				print(
+					f"Dynamic update at epoch {epoch}: f1={f1:.4f}, f2={f2:.4f}"
+					)
+				writer.add_scalar("Coefficient f1", f1, epoch)
+				writer.add_scalar("Coefficient f2", f2, epoch)
+		if epoch%5000==0:
+			torch.save(net_x.state_dict(), 'model_x_'+str(epoch)+'.pth')
+			torch.save(net_p.state_dict(), 'model_p_'+str(epoch)+'.pth')
+			torch.save(net_u.state_dict(), 'model_u_'+str(epoch)+'.pth')
